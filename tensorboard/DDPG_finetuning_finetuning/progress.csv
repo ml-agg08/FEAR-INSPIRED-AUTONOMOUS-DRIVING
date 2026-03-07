@@ -1,0 +1,3 @@
+custom/avg_speed,custom/total_reward,custom/routes_completed,custom/total_distance,custom/mean_reward,custom/avg_center_dev,time/fps,rollout/ep_rew_mean,time/total_timesteps,rollout/ep_len_mean,time/episodes,time/time_elapsed
+20.110107337787312,321.42194210091395,1.7619047619047619,315.8407968466636,0.48700294257714233,0.7599141329560138,,,,,,
+,,,,,,27,169.69795592,88659,807.48,224,23
