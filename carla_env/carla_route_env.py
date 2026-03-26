@@ -193,6 +193,12 @@ class CarlaRouteEnv(gym.Env):
         self.last_fear = 0.0
         self.fear_override_count = 0
 
+        # Traffic light state (Amygdala fast-response circuit)
+        self.is_at_red_light = False
+        self.traffic_light_distance = float('inf')
+        self.traffic_light_state_str = "None"
+        self.red_light_grace_timer = 0.0  # Grace period after red light turns green
+
         # Init metrics
         self.total_reward = 0.0
         self.previous_location = self.vehicle.get_transform().location
@@ -301,6 +307,9 @@ class CarlaRouteEnv(gym.Env):
             "",
             "Fear:            % 7.3f" % self.last_fear,
             "Fear overrides:    % 7d" % self.fear_override_count,
+            "",
+            "Traffic Light: %s (%.1fm)" % (self.traffic_light_state_str, min(self.traffic_light_distance, 999)),
+            "Red Light Stop: %s" % ("YES" if self.is_at_red_light else "no"),
         ])
         if self.activate_spectator:
             # Blit image from spectator camera
@@ -352,6 +361,46 @@ class CarlaRouteEnv(gym.Env):
             current_dist = getattr(self, 'distance_from_center', 0.0)
             current_angle = self.vehicle.get_angle(self.current_waypoint)
 
+            # --- Amygdala Fast-Response: Traffic Light Detection ---
+            self.is_at_red_light = False
+            self.traffic_light_distance = float('inf')
+            self.traffic_light_state_str = "None"
+            try:
+                traffic_light = self.vehicle.actor.get_traffic_light()
+                if traffic_light is not None:
+                    tl_state = traffic_light.get_state()
+                    tl_location = traffic_light.get_transform().location
+                    ego_location = self.vehicle.get_transform().location
+                    self.traffic_light_distance = ego_location.distance(tl_location)
+
+                    was_at_red_light = self.is_at_red_light
+                    
+                    if tl_state == carla.TrafficLightState.Red:
+                        self.traffic_light_state_str = "RED"
+                        if self.traffic_light_distance < 15.0:
+                            self.is_at_red_light = True
+                            self.red_light_grace_timer = 3.0  # 3 second grace period
+                    elif tl_state == carla.TrafficLightState.Yellow:
+                        self.traffic_light_state_str = "YELLOW"
+                        if self.traffic_light_distance < 15.0:
+                            self.is_at_red_light = True
+                            self.red_light_grace_timer = 3.0  # 3 second grace period
+                    elif tl_state == carla.TrafficLightState.Green:
+                        self.traffic_light_state_str = "GREEN"
+                        # If we just left a red light, start grace period
+                        if was_at_red_light:
+                            self.red_light_grace_timer = 3.0
+                
+                # Update grace timer
+                if self.red_light_grace_timer > 0:
+                    self.red_light_grace_timer -= 1.0 / self.fps
+                    # Keep is_at_red_light True during grace period to prevent termination
+                    if self.red_light_grace_timer > 0:
+                        self.is_at_red_light = True
+                        
+            except Exception:
+                pass  # No traffic light affecting this lane
+
             fear_beta = config.CONFIG["reward_params"].get("fear_beta", 0.8)
             fear_dt = config.CONFIG["reward_params"].get("fear_lookahead_dt", 0.75)
             fear_threshold = config.CONFIG["reward_params"].get("fear_threshold", 0.5)
@@ -366,6 +415,7 @@ class CarlaRouteEnv(gym.Env):
                 dt=fear_dt,
                 max_speed=config.CONFIG["reward_params"].get("max_speed", 35.0),
                 max_distance=config.CONFIG["reward_params"].get("max_distance", 3.0),
+                is_at_red_light=self.is_at_red_light,
             )
             self.last_fear = fear_val
 

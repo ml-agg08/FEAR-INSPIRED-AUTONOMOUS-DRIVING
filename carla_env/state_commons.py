@@ -19,13 +19,18 @@ torch.cuda.empty_cache()
 
 def compute_fear(speed_kmh, steer, throttle, distance_from_center,
                  angle_to_waypoint, beta=0.8, f0=0.5, dt=0.75,
-                 max_speed=35.0, max_distance=3.0, wheelbase=2.5):
+                 max_speed=35.0, max_distance=3.0, wheelbase=2.5,
+                 is_at_red_light=False):
     """
     Kinematic fear heuristic  f(s, ã) = β·ĉ(s,ã) + (1-β)·σ̂(s,ã).
 
     Projects the vehicle forward using a bicycle model and calculates:
       - ĉ (cost): normalized probability of breaching safety limits
       - σ̂ (uncertainty): proxy for epistemic uncertainty (curve + deviation)
+
+    The "Amygdala's Fast-Response Circuit": when is_at_red_light is True,
+    cost is forced to ~1.0, guaranteeing fear > f₀ and triggering the
+    existing safe action override (throttle → 0).
 
     Parameters
     ----------
@@ -51,6 +56,8 @@ def compute_fear(speed_kmh, steer, throttle, distance_from_center,
         Lane deviation limit in metres (default 3.0).
     wheelbase : float
         Approximate wheelbase of the ego vehicle in metres.
+    is_at_red_light : bool
+        If True, force cost → 0.95 (Amygdala fast-response circuit).
 
     Returns
     -------
@@ -93,6 +100,11 @@ def compute_fear(speed_kmh, steer, throttle, distance_from_center,
 
     cost = float(np.clip(max(speed_cost, lane_cost) * 0.6 + max(speed_margin, lane_margin) * 0.4, 0.0, 1.0))
 
+    # --- Amygdala's Fast-Response Circuit: Red/Yellow traffic light ---
+    # Force cost → 0.95 so that fear = β·0.95 + (1-β)·σ̂ ≥ 0.76 > f₀=0.7
+    if is_at_red_light:
+        cost = max(cost, 0.95)
+
     # --- Uncertainty σ̂: curve sharpness + current deviation ---
     angle_uncertainty = abs(angle_to_waypoint) / np.pi  # [0, 1]
     deviation_uncertainty = distance_from_center / max_distance  # [0, 1+]
@@ -102,6 +114,7 @@ def compute_fear(speed_kmh, steer, throttle, distance_from_center,
     fear = float(np.clip(beta * cost + (1.0 - beta) * uncertainty, 0.0, 1.0))
 
     return fear, cost, uncertainty
+
 
 
 def load_vae(vae_dir, latent_size):

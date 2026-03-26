@@ -24,7 +24,7 @@ from carla_env.rewards import reward_functions
 
 from vae.utils.misc import LSIZE
 from carla_env.wrappers import vector, get_displacement_vector
-from carla_env.envs.carla_route_env import CarlaRouteEnv
+from carla_env.carla_route_env import CarlaRouteEnv
 from eval_plots import plot_eval, summary_eval
 
 from config import CONFIG
@@ -38,12 +38,13 @@ def run_eval(env, model, model_path=None, record_video=False):
     csv_path = os.path.join(log_path, model_name.replace(".zip", "_eval.csv"))
     model_id = f"{model_path.split('/')[-2]}-{model_name.split('_')[-2]}"
     # vec_env = model.get_env()
-    state = env.reset()
+    state, _info = env.reset()
     rendered_frame = env.render(mode="rgb_array")
 
     columns = ["model_id", "episode", "step", "throttle", "steer", "vehicle_location_x", "vehicle_location_y",
                "reward", "distance", "speed", "center_dev", "angle_next_waypoint", "waypoint_x", "waypoint_y",
-               "route_x", "route_y"]
+               "route_x", "route_y",
+               "fear", "is_at_red_light", "distance_to_light", "override_active"]
     df = pd.DataFrame(columns=columns)
 
     # Init video recording
@@ -64,7 +65,7 @@ def run_eval(env, model, model_path=None, record_video=False):
     while episode_idx < 4:
         env.extra_info.append("Evaluation")
         action, _states = model.predict(state, deterministic=True)
-        state, reward, dones, info = env.step(action)
+        state, reward, dones, truncated, info = env.step(action)
         if env.step_count >= 150 and env.current_waypoint_index == 0:
             dones = True
 
@@ -87,13 +88,22 @@ def run_eval(env, model, model_path=None, record_video=False):
         waypoint_relative = get_displacement_vector(initial_vehicle_location,
                                                     vector(env.current_waypoint.transform.location), initial_heading)
 
+        # Extract FNI-RL metrics
+        fear_val = getattr(env, 'last_fear', 0.0)
+        is_red = getattr(env, 'is_at_red_light', False)
+        dist_light = getattr(env, 'traffic_light_distance', -1.0)
+        if dist_light == float('inf'):
+            dist_light = -1.0
+        override = fear_val > 0.7
+
         new_row = pd.DataFrame(
             [[model_id, env.episode_idx, env.step_count, env.vehicle.control.throttle, env.vehicle.control.steer,
               vehicle_relative[0], vehicle_relative[1], reward,
               env.distance_traveled,
               env.vehicle.get_speed(), env.distance_from_center,
               np.rad2deg(env.vehicle.get_angle(env.current_waypoint)),
-              waypoint_relative[0], waypoint_relative[1], None, None
+              waypoint_relative[0], waypoint_relative[1], None, None,
+              fear_val, is_red, dist_light, override
               ]], columns=columns)
         df = pd.concat([df, new_row], ignore_index=True)
 
@@ -102,7 +112,7 @@ def run_eval(env, model, model_path=None, record_video=False):
         if record_video:
             video_recorder.add_frame(rendered_frame)
         if dones:
-            state = env.reset()
+            state, _info = env.reset()
             episode_idx += 1
             saved_route = False
             print("Episode ", episode_idx)
@@ -119,14 +129,7 @@ def run_eval(env, model, model_path=None, record_video=False):
 if __name__ == "__main__":
     model_path = args["model"]
 
-    algorithm_dict = {"PPO": PPO, "DDPG": DDPG, "SAC": SAC}
-    if CONFIG["algorithm"] not in algorithm_dict:
-        raise ValueError("Invalid algorithm name")
-
-    AlgorithmRL = algorithm_dict[CONFIG["algorithm"]]
-
-    if CONFIG["algorithm"] not in algorithm_dict:
-        raise ValueError("Invalid algorithm name")
+    AlgorithmRL = CONFIG["algorithm"]
 
     vae = load_vae(f'./vae/log_dir/{CONFIG["vae_model"]}', LSIZE)
     observation_space, encode_state_fn, decode_vae_fn = create_encode_state_fn(vae, CONFIG["state"])
@@ -146,3 +149,4 @@ if __name__ == "__main__":
     model = AlgorithmRL.load(model_path, env=env, device='cuda')
 
     run_eval(env, model, model_path, record_video=args['no_record_video'])
+

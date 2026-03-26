@@ -33,9 +33,10 @@ def create_reward_fn(reward_fn):
             global low_speed_timer
             low_speed_timer += 1.0 / env.fps
             speed = env.vehicle.get_speed()
-            if low_speed_timer > 5.0 and speed < 1.0 and env.current_waypoint_index >= 1:
-                env.terminal_state = True
-                terminal_reason = "Vehicle stopped"
+            # Removed vehicle stopped termination - episodes should only end on real failures
+            # if low_speed_timer > 5.0 and speed < 1.0 and env.current_waypoint_index >= 1 and not getattr(env, 'is_at_red_light', False):
+            #     env.terminal_state = True
+            #     terminal_reason = "Vehicle stopped"
 
             # Stop if distance from center > max distance
             if env.distance_from_center > max_distance:
@@ -115,6 +116,7 @@ def compute_fear_penalty(env):
     throttle = env.vehicle.control.throttle
     distance_from_center = getattr(env, 'distance_from_center', 0.0)
     angle_to_waypoint = env.vehicle.get_angle(env.current_waypoint)
+    is_at_red_light = getattr(env, 'is_at_red_light', False)
 
     # Read fear hyperparameters from config (with safe defaults)
     fear_beta = CONFIG["reward_params"].get("fear_beta", 0.8)
@@ -132,6 +134,7 @@ def compute_fear_penalty(env):
         dt=fear_dt,
         max_speed=fear_max_speed,
         max_distance=fear_max_dist,
+        is_at_red_light=is_at_red_light,
     )
     return fear
 
@@ -201,9 +204,10 @@ def refined_reward_fn(env):
     base_reward += waypoint_reward * 0.5  # Adjust weight as needed (0.5 is an example)
 
     # 2b. Anti-reward-hacking: Heavy penalty for near-standstill (< 5 km/h)
-    # This ensures standing still is ALWAYS worse than cautious driving with fear
+    # MASKED when legally stopped at a red/yellow traffic light
+    is_at_red_light = getattr(env, 'is_at_red_light', False)
     current_speed = env.vehicle.get_speed()
-    if current_speed < 5.0:
+    if current_speed < 5.0 and not is_at_red_light:
         idle_penalty = -2.0 * (1.0 - current_speed / 5.0)  # -2.0 at 0 km/h, 0 at 5 km/h
         base_reward += idle_penalty
 
@@ -240,9 +244,11 @@ def refined_reward_fn(env):
             emotion_adjustment -= 0.15 * base_reward
 
     elif dominant_emotion == "L":
-        dynamic_weights["L"] *= 6.0  # 4× amplified (was 1.5) — anti-reward-hacking
-        if max_emotion_score > lazy_threshold_high:
-            emotion_adjustment -= 0.60 * base_reward  # 4× amplified (was 0.15)
+        # Mask lazy penalty when legally stopped at a red/yellow traffic light
+        if not is_at_red_light:
+            dynamic_weights["L"] *= 6.0  # 4× amplified (was 1.5) — anti-reward-hacking
+            if max_emotion_score > lazy_threshold_high:
+                emotion_adjustment -= 0.60 * base_reward  # 4× amplified (was 0.15)
 
     # 5. Combine Rewards
     emotion_reward = (
